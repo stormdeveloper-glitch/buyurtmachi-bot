@@ -11,7 +11,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -153,8 +153,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📋 Xizmatlar katalogi", callback_data="catalog")],
         [InlineKeyboardButton("📝 Buyurtma berish", callback_data="order_start")],
-        [InlineKeyboardButton("� Navbatim", callback_data="my_queue")],
-        [InlineKeyboardButton("�💬 Aloqa", callback_data="contact")],
+        [InlineKeyboardButton("🔢 Navbatim", callback_data="my_queue")],
+        [InlineKeyboardButton("💬 Aloqa", callback_data="contact")],
         [InlineKeyboardButton("❓ Savollar (FAQ)", callback_data="faq")],
     ]
     if is_admin(user.id):
@@ -295,7 +295,9 @@ async def get_order_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["order"]["phone"] = phone
 
-    from telegram import ReplyKeyboardRemove
+    # Telefon klaviaturasini olib tashlaymiz
+    await update.message.reply_text("✅ Raqam qabul qilindi!", reply_markup=ReplyKeyboardRemove())
+
     keyboard = [
         [InlineKeyboardButton(s["name"], callback_data=f"cat_{k}")]
         for k, s in SERVICES.items()
@@ -335,7 +337,13 @@ async def select_service_in_order(update: Update, context: ContextTypes.DEFAULT_
     return ORDER_DESC
 
 async def get_order_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    desc = update.message.text.strip()
+    desc = (update.message.text or "").strip()
+    if not desc:
+        await update.message.reply_text("❌ Tavsif bo'sh bo'lmasin. Iltimos, loyihangiz haqida yozing:")
+        return ORDER_DESC
+
+    if "order" not in context.user_data:
+        context.user_data["order"] = {}
     context.user_data["order"]["description"] = desc
 
     keyboard = [
@@ -352,7 +360,23 @@ async def get_order_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ORDER_LINK
 
 async def get_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = update.message.text.strip()
+    # text bo'sh bo'lishi mumkin (entity-only xabar), shuning uchun xavfsiz olamiz
+    link = (update.message.text or "").strip()
+    if not link:
+        await update.message.reply_text(
+            "❌ Link yoki username aniqlanmadi. Iltimos, matn ko'rinishida yozing:\n"
+            "_Masalan: https://example.uz yoki @username_\n\n"
+            "Yoki O'tkazib yuborish tugmasini bosing.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏭️ O'tkazib yuborish", callback_data="skip_link")]
+            ])
+        )
+        return ORDER_LINK
+
+    if "order" not in context.user_data:
+        context.user_data["order"] = {}
+
     context.user_data["order"]["link"] = link
     await show_order_confirm_msg(update.message, context)
     return ORDER_CONFIRM
@@ -396,7 +420,7 @@ async def show_order_confirm_msg(message, context):
         f"📱 *Telefon:* {order.get('phone', '-')}\n"
         f"🛠 *Xizmat:* {order.get('service_name', '-')}\n"
         f"{link_line}"
-        f"📝 *Tavsif:* {order.get('description', '-')[:100]}\n\n"
+        f"📝 *Tavsif:* {order.get('description', '-')[:100]}{'...' if len(order.get('description', '')) > 100 else ''}\n\n"
         "✅ Tasdiqlaysizmi?"
     )
     keyboard = [
@@ -784,6 +808,12 @@ async def my_queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== CALLBACK HANDLER ====================
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    # Har doim answerni chaqiramiz (spinner o'chishi uchun)
+    # Ba'zi handlerlar o'zi answer qiladi, lekin bu xato bermaydi
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     if query.data == "back_main":
         return await start(update, context)
@@ -840,7 +870,10 @@ def main():
                 CallbackQueryHandler(handle_callbacks),
             ],
             ORDER_LINK: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_order_link),
+                MessageHandler(
+                    (filters.TEXT | filters.Entity("url") | filters.Entity("mention")) & ~filters.COMMAND,
+                    get_order_link
+                ),
                 CallbackQueryHandler(handle_callbacks),
             ],
             ORDER_CONFIRM: [CallbackQueryHandler(handle_callbacks)],
